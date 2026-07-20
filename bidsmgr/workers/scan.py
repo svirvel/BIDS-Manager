@@ -91,6 +91,7 @@ class ScanWorker(QThread):
         probe_convert: bool = False,
         user_hints=None,
         exclusions=None,
+        path_template=None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -106,6 +107,9 @@ class ScanWorker(QThread):
         # to the engine's frozen dataclasses by the caller.
         self._user_hints = user_hints
         self._exclusions = exclusions
+        # Optional directory-structure regex (``PathTemplate``), already
+        # converted from settings by the caller.
+        self._path_template = path_template
         # Cooperative stop flag. ``run_scan`` polls ``_stop.is_set`` at
         # DICOM-read boundaries and raises ``OperationCancelled`` when set.
         self._stop = threading.Event()
@@ -152,6 +156,7 @@ class ScanWorker(QThread):
                 cancel_check=self._stop.is_set,
                 user_hints=self._user_hints,
                 exclusions=self._exclusions,
+                path_template=self._path_template,
             )
             self.progress.emit(
                 f"Scan complete: {len(df)} row(s) → {self._output_tsv}"

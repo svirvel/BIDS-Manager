@@ -46,6 +46,8 @@ import pandas as pd
 from .. import schema
 from ..classifier import dcm2niix_bidsguess, sequence_dict
 from ..classifier.types import Classification
+from ..classifier.path_template import PathTemplate, validate_path_template
+from ..classifier import path_template as path_template_module
 from ..classifier.user_rules import (
     ExclusionRule,
     UserHint,
@@ -1357,6 +1359,7 @@ def run_scan(
     cancel_check=None,
     user_hints: Optional[list[UserHint]] = None,
     exclusions: Optional[list[ExclusionRule]] = None,
+    path_template: Optional[PathTemplate] = None,
 ) -> pd.DataFrame:
     """Run the full scan pipeline and return the DataFrame written to TSV.
 
@@ -1388,13 +1391,19 @@ def run_scan(
         ``.tmp/`` scratch tree is **always wiped** when ``run_scan``
         returns — including on error — so the user is left with the
         inventory TSV and nothing else. MRI rows only.
+    path_template
+        Optional user-supplied regex (see
+        ``classifier.path_template``) that extracts subject/session
+        from each item's relative source folder, taking priority over
+        header-derived values for whichever of the two it covers.
+        Applies to both the MRI and EEG/MEG scanners.
     """
 
     dataset_slug = dataset if dataset else _default_dataset_slug(dicom_root)
 
     df = scan_dicoms_long(
         dicom_root, output_tsv=None, n_jobs=n_jobs, dataset=dataset_slug,
-        cancel_check=cancel_check,
+        cancel_check=cancel_check, path_template=path_template,
     )
 
     # Honour a Stop requested during the (dominant) DICOM read before
@@ -1408,6 +1417,7 @@ def run_scan(
         dataset=dataset_slug,
         line_freq=line_freq,
         montage=montage,
+        path_template=path_template,
     )
 
     if df.empty and df_eeg.empty:
@@ -1622,9 +1632,25 @@ def main(argv: Optional[list[str]] = None) -> int:
             "\"suffix\": \"bold\", \"task\": \"rest\", \"match_mode\": "
             "\"substring\", \"force\": false}], \"scan_exclusions\": "
             "[{\"pattern\": \"calibration\", \"target\": \"sequence\", "
-            "\"match_mode\": \"substring\"}]}. Same schema the GUI Settings "
-            "'Scan rules' tab persists. Hints extend the classifier; "
-            "exclusions mark matching series include=0."
+            "\"match_mode\": \"substring\"}], \"path_template\": "
+            "\"(?P<subject>[^/]+)/(?P<session>[^/]+)/\"}. Same schema the "
+            "GUI Settings 'Scan rules' tab persists. Hints extend the "
+            "classifier; exclusions mark matching series include=0; "
+            "path_template is the same regex accepted by --path-template "
+            "(that flag takes priority when both are given)."
+        ),
+    )
+    parser.add_argument(
+        "--path-template", default=None,
+        help=(
+            "Regex with named groups (?P<subject>...) / (?P<session>...), "
+            "matched against each item's relative source folder. When it "
+            "matches, the extracted subject/session ALWAYS wins over "
+            "header-derived values (PatientID clustering, SeriesDescription "
+            "ses- tags, sub-/ses- folder convention) for whichever of the "
+            "two the pattern covers. Use for partially pre-sorted sources, "
+            "e.g. '(?P<subject>[^/]+)/(?P<session>[^/]+)/' for a "
+            "<subject>/<session>/<sequence>/... tree."
         ),
     )
     parser.add_argument(
@@ -1638,6 +1664,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     user_hints: Optional[list[UserHint]] = None
     exclusions: Optional[list[ExclusionRule]] = None
+    path_template: Optional[PathTemplate] = None
     if args.rules_file:
         try:
             with open(args.rules_file, "r", encoding="utf-8") as fh:
@@ -1645,6 +1672,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         except (OSError, ValueError) as exc:
             parser.error(f"--rules-file could not be read as JSON: {exc}")
         user_hints, exclusions = user_rules_module.from_json(rules_obj)
+        path_template = path_template_module.from_json(rules_obj)
         # Reject any bad regex up front so the scan doesn't run a no-op rule.
         for h in user_hints:
             if h.match_mode == "regex":
@@ -1657,6 +1685,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                 err = user_rules_module.validate_regex(r.pattern)
                 if err:
                     parser.error(f"--rules-file: bad exclusion regex {r.pattern!r}: {err}")
+        if path_template is not None:
+            err = validate_path_template(path_template.pattern)
+            if err:
+                parser.error(f"--rules-file: bad path_template: {err}")
+
+    if args.path_template:
+        err = validate_path_template(args.path_template)
+        if err:
+            parser.error(f"--path-template: {err}")
+        # CLI flag wins over any value already loaded from --rules-file.
+        path_template = PathTemplate(pattern=args.path_template)
 
     if args.project is None and not args.output_tsv:
         parser.error("provide an output_tsv path, or use --project <dataset>")
@@ -1681,6 +1720,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             dataset=args.dataset or bids_root.name,
             line_freq=args.line_freq, montage=args.montage,
             user_hints=user_hints, exclusions=exclusions,
+            path_template=path_template,
         )
         version = import_scan_as_version(
             bids_root, staged_tsv, raw_root=Path(args.dicom_root),
@@ -1704,6 +1744,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         montage=args.montage,
         user_hints=user_hints,
         exclusions=exclusions,
+        path_template=path_template,
     )
     return 0
 

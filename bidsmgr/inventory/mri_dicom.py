@@ -37,12 +37,14 @@ import pydicom
 from joblib import Parallel, delayed
 from pydicom.multival import MultiValue
 
+from ..classifier.path_template import PathTemplate, match_path_template
 from ..classifier.sequence_dict import (
     SKIP_MODALITIES,
     guess_modality,
     modality_to_container,
     normalize_study_name,
 )
+from ..util.label import sanitize_bids_label
 from .subject_identity import IdentityTuple, cluster_subjects, normalize_tuple
 
 
@@ -236,6 +238,7 @@ def scan_dicoms_long(
     n_jobs: int = 1,
     dataset: Optional[str] = None,
     cancel_check=None,
+    path_template: Optional[PathTemplate] = None,
 ) -> pd.DataFrame:
     """Walk ``root_dir`` and return a long-format inventory DataFrame.
 
@@ -252,6 +255,12 @@ def scan_dicoms_long(
         ``dataset`` column. The converter uses this to partition subjects
         across sibling BIDS roots. ``None`` leaves the column empty (the
         CLI fills in a default before this function is called).
+    path_template
+        Optional user-supplied regex (see
+        :mod:`bidsmgr.classifier.path_template`) matched against each
+        file's relative source folder. A matched, non-empty ``subject``/
+        ``session`` group always wins over the header-derived value for
+        whichever of the two it covers.
     """
 
     root_dir = Path(root_dir)
@@ -299,11 +308,49 @@ def scan_dicoms_long(
         if (_i & 63) == 0 and is_cancelled(cancel_check):
             raise OperationCancelled("scan cancelled by user")
         results.append(_res)
+    # Per-folder path-template match cache: the folder->(subject,session)
+    # match is invariant across a folder's files, so the user's regex runs
+    # once per distinct folder rather than once per file (a folder can hold
+    # thousands of DICOMs).
+    folder_template_cache: dict[str, tuple[Optional[str], Optional[str]]] = {}
+    # Raw (pre-sanitize) path-derived subject label, keyed by the synthetic
+    # subj_key below — kept out of ``demo`` (which gets column-splatted into
+    # every row) so it only ever feeds the display-only ``subject`` column
+    # in the row-building loop further down.
+    path_subject_label: dict[str, str] = {}
+
     for res in results:
         if not res:
             continue
         subj_key = res["subj_key"]
         folder = res["folder"]
+        sess_tag = res["sess_tag"]
+
+        if path_template is not None:
+            if folder not in folder_template_cache:
+                folder_template_cache[folder] = match_path_template(path_template, folder)
+            path_subj, path_sess = folder_template_cache[folder]
+            # Path always wins: a matched, non-empty subject/session group
+            # overrides the header-derived value for this file. The
+            # synthetic ``__path__||<label>`` key deliberately does not
+            # look like the ``pid||given||family`` shape the identity
+            # clustering below expects, so it bypasses header-based fuzzy
+            # matching entirely — same label always co-clusters (same
+            # string), different labels never merge. NOTE: if a
+            # mis-written template maps two genuinely different patients
+            # to the same label, ``demo.setdefault`` below is first-write-
+            # wins, so only the first file's header demographics show up
+            # for that merged subject.
+            if path_subj:
+                sanitized_subj = sanitize_bids_label(path_subj)
+                if sanitized_subj:
+                    subj_key = f"__path__||{sanitized_subj}"
+                    path_subject_label.setdefault(subj_key, path_subj)
+            if path_sess:
+                sanitized_sess = sanitize_bids_label(path_sess)
+                if sanitized_sess:
+                    sess_tag = f"ses-{sanitized_sess}"
+
         key = (res["series"], res["uid"])
         counts[subj_key][folder][key] += 1
         mods[subj_key][folder][key] = res["modality"]
@@ -320,8 +367,8 @@ def scan_dicoms_long(
         uid_str = res["uid"]
         if uid_str:
             files_by_uid[uid_str].append(res["file_path"])
-        if res["sess_tag"]:
-            sessset[subj_key][folder].add(res["sess_tag"])
+        if sess_tag:
+            sessset[subj_key][folder].add(sess_tag)
         study_tuple = (
             res.get("study_uid", "") or "",
             res.get("study_date", "") or "",
@@ -392,7 +439,7 @@ def scan_dicoms_long(
     # Build rows.
     rows: list[dict] = []
     for subj_key in sorted(counts):
-        given_name = demo[subj_key]["GivenName"]
+        given_name = path_subject_label.get(subj_key) or demo[subj_key]["GivenName"]
         for folder in sorted(counts[subj_key]):
             ses_labels = sorted(sessset[subj_key][folder])
             session = ses_labels[0] if len(ses_labels) == 1 else ""

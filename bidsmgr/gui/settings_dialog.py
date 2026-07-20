@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -39,6 +40,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .. import schema
+from ..classifier import path_template as path_template_module
 from ..classifier import sequence_dict
 from ..classifier import user_rules
 from ..util.system_info import SystemInfo, get_system_info
@@ -299,6 +301,41 @@ class SettingsDialog(QDialog):
         hbl.addLayout(self._rule_row_buttons(self._add_hint_row, self._hint_table))
         v.addWidget(hint_box)
 
+        # Directory-structure template (partially pre-sorted sources).
+        path_box = QGroupBox("Source directory template (optional)")
+        pbl = QVBoxLayout(path_box)
+        path_intro = QLabel(
+            "For sources already partially sorted into folders, e.g. "
+            "<subject>/<session>/<sequence>/..., a regex with named groups "
+            "extracts subject/session directly from the folder path. When "
+            "it matches, it ALWAYS wins over header-derived values "
+            "(PatientID, SeriesDescription ses- tags) for whichever of "
+            "subject/session it covers. Applies to MRI and EEG/MEG."
+        )
+        path_intro.setWordWrap(True)
+        path_intro.setStyleSheet("color: #8b949e;")
+        pbl.addWidget(path_intro)
+
+        path_form = QFormLayout()
+        self._path_template_edit = QLineEdit()
+        self._path_template_edit.setPlaceholderText(
+            r"(?P<subject>[^/]+)/(?P<session>[^/]+)/"
+        )
+        path_form.addRow("Pattern:", self._path_template_edit)
+
+        self._path_template_test_edit = QLineEdit()
+        self._path_template_test_edit.setPlaceholderText("101/baseline/t1_mprage")
+        path_form.addRow("Test against:", self._path_template_test_edit)
+        pbl.addLayout(path_form)
+
+        self._path_template_preview = QLabel("")
+        self._path_template_preview.setWordWrap(True)
+        pbl.addWidget(self._path_template_preview)
+
+        self._path_template_edit.textChanged.connect(self._update_path_template_preview)
+        self._path_template_test_edit.textChanged.connect(self._update_path_template_preview)
+        v.addWidget(path_box)
+
         # Read-only built-in criteria.
         builtin_box = QGroupBox("Built-in MRI classifier criteria (read-only)")
         bbl = QVBoxLayout(builtin_box)
@@ -426,6 +463,36 @@ class SettingsDialog(QDialog):
                 it = QTableWidgetItem(val)
                 it.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 table.setItem(r, col, it)
+
+    def _update_path_template_preview(self) -> None:
+        """Live-validate the pattern and show what it extracts from the
+        sample path, so a regex mistake is obvious before Save."""
+        pattern = self._path_template_edit.text().strip()
+        if not pattern:
+            self._path_template_preview.setText("")
+            return
+        err = path_template_module.validate_path_template(pattern)
+        if err:
+            self._path_template_preview.setStyleSheet("color: #e5534b;")
+            self._path_template_preview.setText(f"Invalid pattern: {err}")
+            return
+        sample = self._path_template_test_edit.text().strip()
+        if not sample:
+            self._path_template_preview.setStyleSheet("color: #8b949e;")
+            self._path_template_preview.setText("Pattern is valid.")
+            return
+        subj, sess = path_template_module.match_path_template(
+            path_template_module.PathTemplate(pattern=pattern), sample,
+        )
+        if subj is None and sess is None:
+            self._path_template_preview.setStyleSheet("color: #d29922;")
+            self._path_template_preview.setText("No match against the test path.")
+            return
+        parts = []
+        parts.append(f"subject={subj!r}" if subj else "subject=(not matched)")
+        parts.append(f"session={sess!r}" if sess else "session=(not matched)")
+        self._path_template_preview.setStyleSheet("color: #3fb950;")
+        self._path_template_preview.setText("Match: " + ", ".join(parts))
 
     def _read_scan_rules(self) -> tuple[list[dict], list[dict], Optional[str]]:
         """Read both editable tables into list[dict]. Returns
@@ -669,6 +736,10 @@ class SettingsDialog(QDialog):
                 force=bool(h.get("force", False)),
             )
 
+        self._path_template_edit.setText(s.path_template)
+        self._path_template_test_edit.setText("")
+        self._update_path_template_preview()
+
     def _on_restore_defaults(self) -> None:
         """Reset all widgets to the AppSettings field defaults (not saved
         until the user clicks Save)."""
@@ -682,9 +753,19 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Invalid scan rule", error)
             return
 
+        path_pattern = self._path_template_edit.text().strip()
+        if path_pattern:
+            err = path_template_module.validate_path_template(path_pattern)
+            if err:
+                QMessageBox.warning(
+                    self, "Invalid source directory template", err,
+                )
+                return
+
         s = self._settings
         s.user_hints = hints
         s.scan_exclusions = exclusions
+        s.path_template = path_pattern
         s.theme = self._theme_combo.currentText()
         s.font_scale = self._FONT_SCALE_PRESETS[
             self._font_scale_combo.currentIndex()

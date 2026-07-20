@@ -49,6 +49,9 @@ KEYS = {
     # Stored as JSON-encoded lists - see ``bidsmgr.classifier.user_rules``.
     "user_hints":         "classifier/user_hints",
     "scan_exclusions":    "classifier/scan_exclusions",
+    # Directory-structure regex for partially pre-sorted sources - see
+    # ``bidsmgr.classifier.path_template``. Blank means "not configured".
+    "path_template":      "scan/path_template",
     # Post-convert chain
     "post_run_metadata":  "post_convert/run_metadata",
     "post_run_validate":  "post_convert/run_validate",
@@ -159,6 +162,13 @@ class AppSettings:
     # exclusion: {"pattern", "target": "sequence"|"path", "match_mode"}
     user_hints: list = field(default_factory=list)
     scan_exclusions: list = field(default_factory=list)
+
+    # Optional regex, e.g. ``(?P<subject>[^/]+)/(?P<session>[^/]+)/``,
+    # extracting subject/session from a partially pre-sorted source tree's
+    # relative folder path. Empty string means "not configured". Converted
+    # to/from ``classifier.path_template.PathTemplate`` via
+    # ``to_path_template`` at the boundary, same pattern as the hints above.
+    path_template: str = ""
 
     # Recently opened/created project dataset roots (most-recent first).
     recent_projects: list = field(default_factory=list)
@@ -297,6 +307,7 @@ class AppSettings:
             out.header_logo = "default"
         out.user_hints = _as_json_list(s.value(KEYS["user_hints"]), [])
         out.scan_exclusions = _as_json_list(s.value(KEYS["scan_exclusions"]), [])
+        out.path_template = _as_str(s.value(KEYS["path_template"]), out.path_template)
         out.recent_projects = _as_json_list(s.value(KEYS["recent_projects"]), [])
         return out
 
@@ -335,6 +346,7 @@ class AppSettings:
         # Scan rules as JSON blobs.
         s.setValue(KEYS["user_hints"], json.dumps(self.user_hints))
         s.setValue(KEYS["scan_exclusions"], json.dumps(self.scan_exclusions))
+        s.setValue(KEYS["path_template"], self.path_template)
         s.setValue(KEYS["recent_projects"], json.dumps(self.recent_projects))
         s.sync()
 
@@ -421,6 +433,11 @@ class AppSettings:
         from ..classifier import user_rules
         _, excl = user_rules.from_json({"scan_exclusions": self.scan_exclusions})
         return excl
+
+    def to_path_template(self):
+        """Return the persisted pattern as a ``PathTemplate``, or ``None``."""
+        from ..classifier import path_template as path_template_module
+        return path_template_module.from_json({"path_template": self.path_template})
 
     @classmethod
     def remember_nifti_crosshair(cls, color: str, thickness: int) -> None:

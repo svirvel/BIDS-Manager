@@ -32,6 +32,8 @@ from typing import List, Optional
 import pandas as pd
 
 from .. import schema as schema_mod
+from ..classifier.path_template import PathTemplate, match_path_template
+from ..util.label import sanitize_bids_label
 
 log = logging.getLogger(__name__)
 
@@ -527,7 +529,7 @@ def _bids_id_from_filename(name: str) -> str:
     low = s.lower()
     if low.startswith("sub-") or low.startswith("sub_"):
         s = s[4:]
-    return re.sub(r"[^0-9A-Za-z]+", "", s)
+    return sanitize_bids_label(s)
 
 
 def extract_task_run(stem: str) -> tuple[str, str]:
@@ -587,13 +589,16 @@ def extract_task_run(stem: str) -> tuple[str, str]:
 
 
 def guess_subject_session_task(
-    path: Path, root: Path,
+    path: Path, root: Path, *, path_template: Optional[PathTemplate] = None,
 ) -> tuple[str, str, str, str]:
     """Heuristic: pull subject/session/task/run hints from ``path``.
 
-    BIDS form (``sub-XXX/ses-YYY/...``) wins for subject and session.
-    Task and run come from :func:`extract_task_run` applied to the
-    filename stem (after stripping ``.nii.gz``/``.fif`` etc).
+    A user-supplied ``path_template`` (matched against the relative
+    *directory* of ``path``) wins for whichever of subject/session it
+    covers. Otherwise the built-in BIDS form (``sub-XXX/ses-YYY/...``)
+    wins for subject and session. Task and run come from
+    :func:`extract_task_run` applied to the filename stem (after
+    stripping ``.nii.gz``/``.fif`` etc).
 
     Returns ``(subject, session, task, run)``. Empty strings where no
     hint was found.
@@ -605,6 +610,14 @@ def guess_subject_session_task(
     parts = list(rel.parts)
     sub = ses = ""
     task = run = ""
+
+    rel_dir = str(rel.parent).replace(os.sep, "/")
+    tmpl_sub, tmpl_ses = match_path_template(path_template, rel_dir)
+    if tmpl_sub:
+        sub = sanitize_bids_label(tmpl_sub)
+    if tmpl_ses:
+        ses = sanitize_bids_label(tmpl_ses)
+
     for part in parts:
         if not sub:
             m = re.match(r"sub-([A-Za-z0-9]+)", part, flags=re.IGNORECASE)
@@ -630,7 +643,7 @@ def guess_subject_session_task(
     # convertible. The user sees this in the TSV and can rename to a
     # meaningful value before convert.
     if not task:
-        task = re.sub(r"[^0-9A-Za-z]+", "", stem) or "task"
+        task = sanitize_bids_label(stem) or "task"
     return sub, ses, task, run
 
 
@@ -646,6 +659,7 @@ def scan_eeg_meg(
     candidates: Optional[List[Path]] = None,
     line_freq: Optional[float] = None,
     montage: Optional[str] = None,
+    path_template: Optional[PathTemplate] = None,
 ) -> pd.DataFrame:
     """Walk ``root`` and return a DataFrame of probed EEG/MEG recordings.
 
@@ -661,6 +675,12 @@ def scan_eeg_meg(
         Optional pre-computed list of candidate paths. When provided
         we skip the directory walk; used by ``cli/scan.py`` so it can
         do one combined walk for both modalities.
+    path_template
+        Optional user-supplied regex (see
+        :mod:`bidsmgr.classifier.path_template`) that extracts
+        subject/session from each recording's relative source directory.
+        Wins over the built-in ``sub-``/``ses-`` prefix convention for
+        whichever of subject/session it covers.
 
     Returns
     -------
@@ -690,7 +710,9 @@ def scan_eeg_meg(
     bids_id_for_subject: dict[str, str] = {}
 
     for path in candidates:
-        sub_hint, ses_hint, task_hint, run_hint = guess_subject_session_task(path, root)
+        sub_hint, ses_hint, task_hint, run_hint = guess_subject_session_task(
+            path, root, path_template=path_template,
+        )
         sub_token = sub_hint or _bids_id_from_filename(path.parent.name)
         if not sub_token:
             sub_token = path.stem

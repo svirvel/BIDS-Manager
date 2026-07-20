@@ -306,12 +306,15 @@ class SettingsDialog(QDialog):
         pbl = QVBoxLayout(path_box)
         path_intro = QLabel(
             "For sources already partially sorted into folders, e.g. "
-            "<subject>/<session>/<sequence>/..., a regex with named groups "
-            "extracts subject/session directly from the folder path. When "
-            "it matches, it ALWAYS wins over header-derived values "
-            "(PatientID, SeriesDescription ses- tags) for whichever of "
-            "subject/session it covers. Applies to MRI and EEG/MEG."
+            "subject/datatype/session/run/..., a regex with named groups "
+            "extracts BIDS fields directly from the folder path: subject, "
+            "session, datatype (e.g. anat), suffix (e.g. T1w), or any BIDS "
+            "entity short code (task, run, acq, ce, rec, dir, echo, ...). "
+            "When a group matches, it ALWAYS wins over header/classifier- "
+            "derived values for whichever field it covers. datatype/suffix "
+            "apply to MRI only; other groups apply to MRI and EEG/MEG."
         )
+        path_intro.setTextFormat(Qt.TextFormat.PlainText)
         path_intro.setWordWrap(True)
         path_intro.setStyleSheet("color: #8b949e;")
         pbl.addWidget(path_intro)
@@ -319,16 +322,17 @@ class SettingsDialog(QDialog):
         path_form = QFormLayout()
         self._path_template_edit = QLineEdit()
         self._path_template_edit.setPlaceholderText(
-            r"(?P<subject>[^/]+)/(?P<session>[^/]+)/"
+            r"(?P<subject>[^/]+)/(?P<datatype>[^/]+)/(?P<session>[^/]+)/(?P<run>[^/]+)"
         )
         path_form.addRow("Pattern:", self._path_template_edit)
 
         self._path_template_test_edit = QLineEdit()
-        self._path_template_test_edit.setPlaceholderText("101/baseline/t1_mprage")
+        self._path_template_test_edit.setPlaceholderText("101/anat/baseline/1")
         path_form.addRow("Test against:", self._path_template_test_edit)
         pbl.addLayout(path_form)
 
         self._path_template_preview = QLabel("")
+        self._path_template_preview.setTextFormat(Qt.TextFormat.PlainText)
         self._path_template_preview.setWordWrap(True)
         pbl.addWidget(self._path_template_preview)
 
@@ -481,16 +485,14 @@ class SettingsDialog(QDialog):
             self._path_template_preview.setStyleSheet("color: #8b949e;")
             self._path_template_preview.setText("Pattern is valid.")
             return
-        subj, sess = path_template_module.match_path_template(
+        matched = path_template_module.match_path_template(
             path_template_module.PathTemplate(pattern=pattern), sample,
         )
-        if subj is None and sess is None:
+        if not matched:
             self._path_template_preview.setStyleSheet("color: #d29922;")
             self._path_template_preview.setText("No match against the test path.")
             return
-        parts = []
-        parts.append(f"subject={subj!r}" if subj else "subject=(not matched)")
-        parts.append(f"session={sess!r}" if sess else "session=(not matched)")
+        parts = [f"{k}={v!r}" for k, v in matched.items()]
         self._path_template_preview.setStyleSheet("color: #3fb950;")
         self._path_template_preview.setText("Match: " + ", ".join(parts))
 

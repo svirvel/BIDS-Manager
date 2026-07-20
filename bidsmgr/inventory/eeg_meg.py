@@ -32,7 +32,7 @@ from typing import List, Optional
 import pandas as pd
 
 from .. import schema as schema_mod
-from ..classifier.path_template import PathTemplate, match_path_template
+from ..classifier.path_template import PathTemplate, inject_entities, match_path_template
 from ..util.label import sanitize_bids_label
 
 log = logging.getLogger(__name__)
@@ -612,7 +612,8 @@ def guess_subject_session_task(
     task = run = ""
 
     rel_dir = str(rel.parent).replace(os.sep, "/")
-    tmpl_sub, tmpl_ses = match_path_template(path_template, rel_dir)
+    matched = match_path_template(path_template, rel_dir)
+    tmpl_sub, tmpl_ses = matched.get("subject"), matched.get("session")
     if tmpl_sub:
         sub = sanitize_bids_label(tmpl_sub)
     if tmpl_ses:
@@ -756,6 +757,18 @@ def scan_eeg_meg(
         if run_hint:
             # BIDS run is an integer; strip leading zeros.
             entities["run"] = str(int(run_hint)) if run_hint.isdigit() else run_hint
+        if path_template is not None:
+            try:
+                rel_dir = str(path.relative_to(root).parent).replace(os.sep, "/")
+            except ValueError:
+                rel_dir = str(path.parent)
+            matched = match_path_template(path_template, rel_dir)
+            # Path always wins: overrides task/run above too (both are
+            # recognised entity short codes), plus any other BIDS entity
+            # (acq, ce, ...) the pattern captures. No datatype/suffix
+            # override for EEG/MEG — the file format already identifies
+            # that reliably, unlike MRI's SeriesDescription guessing.
+            entities = inject_entities(matched, entities)
         # For EEG/MEG/iEEG the file's own datatype-specific suffix matches
         # the datatype key (eeg, meg, ieeg, nirs).
         suffix = datatype

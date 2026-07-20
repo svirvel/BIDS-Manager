@@ -260,7 +260,10 @@ def scan_dicoms_long(
         :mod:`bidsmgr.classifier.path_template`) matched against each
         file's relative source folder. A matched, non-empty ``subject``/
         ``session`` group always wins over the header-derived value for
-        whichever of the two it covers.
+        whichever of the two it covers. Any ``datatype``/``suffix``/entity
+        groups in the same pattern are ignored here — they're applied
+        later, in ``cli/scan.py``, once a row has a classifier result to
+        override.
     """
 
     root_dir = Path(root_dir)
@@ -308,11 +311,13 @@ def scan_dicoms_long(
         if (_i & 63) == 0 and is_cancelled(cancel_check):
             raise OperationCancelled("scan cancelled by user")
         results.append(_res)
-    # Per-folder path-template match cache: the folder->(subject,session)
-    # match is invariant across a folder's files, so the user's regex runs
-    # once per distinct folder rather than once per file (a folder can hold
-    # thousands of DICOMs).
-    folder_template_cache: dict[str, tuple[Optional[str], Optional[str]]] = {}
+    # Per-folder path-template match cache: the folder's matched-group dict
+    # is invariant across a folder's files, so the user's regex runs once
+    # per distinct folder rather than once per file (a folder can hold
+    # thousands of DICOMs). Only ``subject``/``session`` are consumed here;
+    # any ``datatype``/``suffix``/entity groups are picked up later by
+    # ``cli/scan.py`` (which re-matches against the same ``source_folder``).
+    folder_template_cache: dict[str, dict[str, str]] = {}
     # Raw (pre-sanitize) path-derived subject label, keyed by the synthetic
     # subj_key below — kept out of ``demo`` (which gets column-splatted into
     # every row) so it only ever feeds the display-only ``subject`` column
@@ -329,7 +334,8 @@ def scan_dicoms_long(
         if path_template is not None:
             if folder not in folder_template_cache:
                 folder_template_cache[folder] = match_path_template(path_template, folder)
-            path_subj, path_sess = folder_template_cache[folder]
+            matched = folder_template_cache[folder]
+            path_subj, path_sess = matched.get("subject"), matched.get("session")
             # Path always wins: a matched, non-empty subject/session group
             # overrides the header-derived value for this file. The
             # synthetic ``__path__||<label>`` key deliberately does not

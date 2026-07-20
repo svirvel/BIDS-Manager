@@ -814,12 +814,22 @@ def _augment_dataframe(
     chosen: dict[str, Classification],
     abort_verdicts: Optional[dict[str, str]] = None,
     probe_stats: Optional[dict[str, ProbeFileStats]] = None,
+    path_template: Optional[PathTemplate] = None,
 ) -> pd.DataFrame:
     """Merge classifier output back into the inventory DataFrame.
 
     The relationship is N rows per DataFrame row (fmap collapse joins UIDs).
     We pick the *highest-confidence* classification across the underlying
     UIDs as the proposal for the DataFrame row.
+
+    ``path_template``, when given, is re-matched against each row's
+    ``source_folder`` and applied as a final override on the winning
+    ``Classification`` — datatype/suffix (if the matched values are
+    schema-recognised) and any BIDS entity (task/run/acq/...) — before
+    ``_propose_basename`` builds the entities dict / basename / issues.
+    Path always wins; applying it here (rather than as another competing
+    classifier) means the existing schema validation in
+    ``_propose_basename`` handles invalid combinations for free.
     """
 
     abort_verdicts = abort_verdicts or {}
@@ -848,6 +858,24 @@ def _augment_dataframe(
         if not candidates:
             continue
         best = max(candidates, key=lambda c: c.confidence)
+
+        if path_template is not None:
+            source_folder = str(df.at[df_idx, "source_folder"] or "")
+            matched = path_template_module.match_path_template(path_template, source_folder)
+            if matched:
+                new_dt, new_sfx, notes = path_template_module.apply_datatype_suffix_override(
+                    matched, datatype=best.datatype, suffix=best.suffix,
+                )
+                new_entities = path_template_module.inject_entities(matched, best.candidate_entities)
+                for note in notes:
+                    log.warning(note)
+                if (new_dt, new_sfx, new_entities) != (best.datatype, best.suffix, best.candidate_entities):
+                    best = best.model_copy(update={
+                        "datatype": new_dt,
+                        "suffix": new_sfx,
+                        "candidate_entities": new_entities,
+                        "classifier": f"{best.classifier}+path_template",
+                    })
 
         bids_name = str(df.at[df_idx, "BIDS_name"] or "").replace("sub-", "")
         session = str(df.at[df_idx, "session"] or "").replace("ses-", "")
@@ -1392,11 +1420,14 @@ def run_scan(
         returns — including on error — so the user is left with the
         inventory TSV and nothing else. MRI rows only.
     path_template
-        Optional user-supplied regex (see
-        ``classifier.path_template``) that extracts subject/session
-        from each item's relative source folder, taking priority over
-        header-derived values for whichever of the two it covers.
-        Applies to both the MRI and EEG/MEG scanners.
+        Optional user-supplied regex (see ``classifier.path_template``)
+        that extracts BIDS identity/entities from each item's relative
+        source folder — subject/session (both scanners), plus datatype/
+        suffix and any BIDS entity like task/run/acq (MRI only, applied
+        after classification in ``_augment_dataframe``; EEG/MEG gets
+        entities but not datatype/suffix — its datatype is already
+        reliably auto-detected from the file format). Matched fields
+        always take priority over header/classifier-derived values.
     """
 
     dataset_slug = dataset if dataset else _default_dataset_slug(dicom_root)
@@ -1497,7 +1528,7 @@ def run_scan(
                             probe_dir, exc,
                         )
 
-    df = _augment_dataframe(df, rows, chosen, abort_verdicts, probe_stats)
+    df = _augment_dataframe(df, rows, chosen, abort_verdicts, probe_stats, path_template=path_template)
     df.drop(columns=["_source_dir"], errors="ignore", inplace=True)
 
     # Concatenate MRI + EEG/MEG rows into the unified shape. Columns that
@@ -1643,14 +1674,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--path-template", default=None,
         help=(
-            "Regex with named groups (?P<subject>...) / (?P<session>...), "
-            "matched against each item's relative source folder. When it "
-            "matches, the extracted subject/session ALWAYS wins over "
-            "header-derived values (PatientID clustering, SeriesDescription "
-            "ses- tags, sub-/ses- folder convention) for whichever of the "
-            "two the pattern covers. Use for partially pre-sorted sources, "
-            "e.g. '(?P<subject>[^/]+)/(?P<session>[^/]+)/' for a "
-            "<subject>/<session>/<sequence>/... tree."
+            "Regex with named groups, matched against each item's relative "
+            "source folder. Recognised groups: (?P<subject>...) / "
+            "(?P<session>...) (identity, both scanners); (?P<datatype>...) "
+            "/ (?P<suffix>...) (MRI only, e.g. 'anat' / 'T1w'); and any BIDS "
+            "entity short code, e.g. (?P<task>...) / (?P<run>...) / "
+            "(?P<acq>...). A matched, schema-recognised value ALWAYS wins "
+            "over header/classifier-derived values (PatientID clustering, "
+            "SeriesDescription guessing, sub-/ses- folder convention) for "
+            "whichever field it covers; an unrecognised datatype/suffix is "
+            "ignored (logged) rather than injected. Use for partially "
+            "pre-sorted sources, e.g. "
+            "'(?P<subject>[^/]+)/(?P<datatype>[^/]+)/(?P<session>[^/]+)/(?P<run>[^/]+)' "
+            "for a <subject>/<datatype>/<session>/<run>/... tree."
         ),
     )
     parser.add_argument(

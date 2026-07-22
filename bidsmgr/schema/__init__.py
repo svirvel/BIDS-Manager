@@ -22,6 +22,7 @@ Public API:
 from __future__ import annotations
 
 from .engine import (
+    KNOWN_EXTENSIONS,
     allowed_entities,
     build_basename,
     build_relative_path,
@@ -36,6 +37,7 @@ from .engine import (
     list_suffixes,
     optional_entities,
     optional_sidecar_fields,
+    parse_basename,
     recommended_sidecar_fields,
     required_entities,
     required_sidecar_fields,
@@ -47,6 +49,7 @@ from .types import (
     EntityFormat,
     EntityInfo,
     FieldInfo,
+    ParsedBasename,
     Scope,
     Severity,
     Suffix,
@@ -76,6 +79,8 @@ __all__ = [
     # name building
     "build_basename",
     "build_relative_path",
+    "parse_basename",
+    "KNOWN_EXTENSIONS",
     # validation
     "validate_entity_set",
     "validate_basename",
@@ -91,6 +96,7 @@ __all__ = [
     "EntityFormat",
     "EntityInfo",
     "FieldInfo",
+    "ParsedBasename",
     "Severity",
     "Scope",
     "ValidationVerdict",

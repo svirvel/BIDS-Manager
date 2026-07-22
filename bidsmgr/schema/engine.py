@@ -11,12 +11,21 @@ The schema is the source of truth. We do not hand-curate rules.
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 from .loader import get_schema
-from .types import Datatype, Entity, EntityFormat, EntityInfo, FieldInfo, Suffix
+from .types import (
+    Datatype,
+    Entity,
+    EntityFormat,
+    EntityInfo,
+    FieldInfo,
+    ParsedBasename,
+    Suffix,
+)
 
 
 # -- listing --------------------------------------------------------------
@@ -224,6 +233,95 @@ def build_relative_path(
     return rel / build_basename(entities, datatype, suffix, extension)
 
 
+# -- name parsing (reverse of build_basename) ------------------------------
+
+
+_BASENAME_TOKEN_RE = re.compile(r"^([a-zA-Z]+)-([0-9a-zA-Z]+)$")
+
+# Longest / double extensions FIRST so e.g. ``.tsv.gz`` is stripped before
+# ``.tsv`` (otherwise the suffix parses as ``physio.tsv.gz`` and is wrongly
+# flagged "not valid"). Covers MRI, physio, and EEG/MEG/iEEG.
+KNOWN_EXTENSIONS: tuple[str, ...] = (
+    ".nii.gz", ".tsv.gz", ".fif.gz",
+    ".nii", ".tsv", ".json", ".bval", ".bvec",
+    ".edf", ".bdf", ".gdf", ".vhdr", ".vmrk", ".eeg", ".fdt",
+    ".set", ".fif", ".con", ".sqd", ".cnt", ".kdf", ".mef", ".nwb", ".egi",
+)
+
+
+@lru_cache(maxsize=1)
+def _short_to_long_entities() -> dict[str, str]:
+    schema = get_schema()
+    return {
+        str(schema.objects.entities[e].get("name", e)): e
+        for e in schema.objects.entities.keys()
+    }
+
+
+def _parse_entity_tokens(tokens: Sequence[str]) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """Split ``key-value`` filename tokens into an entities dict (long-name
+    keyed). Malformed or unrecognised tokens are skipped; each is reported
+    as an ``(rule_id, message)`` pair rather than raising, so callers can
+    surface them however fits (plain warning strings, or
+    ``ValidationVerdict``\\ s in ``schema/validation.py``).
+    """
+    short_to_long = _short_to_long_entities()
+    entities: dict[str, str] = {}
+    issues: list[tuple[str, str]] = []
+    for chunk in tokens:
+        m = _BASENAME_TOKEN_RE.match(chunk)
+        if not m:
+            issues.append((
+                "basename.malformed_token",
+                f"Token {chunk!r} is not a valid 'key-value' BIDS entity",
+            ))
+            continue
+        short, value = m.group(1), m.group(2)
+        long_name = short_to_long.get(short)
+        if not long_name:
+            issues.append(("entity.unknown", f"Unknown entity short form: {short!r}"))
+            continue
+        entities[long_name] = value
+    return entities, issues
+
+
+def parse_basename(path: Path) -> ParsedBasename:
+    """Parse a BIDS file's path into a :class:`ParsedBasename`.
+
+    The reverse of :func:`build_basename`: ``datatype`` comes from the
+    parent folder name (validated against :func:`list_datatypes`, blank if
+    unrecognised); the stem is split into ``key-value`` entity tokens plus
+    a trailing suffix. Never raises — a malformed or partially-broken
+    filename still parses as far as it can, with the rest recorded in
+    ``.warnings``.
+    """
+    name = path.name
+    extension = ""
+    for ext in KNOWN_EXTENSIONS:
+        if name.endswith(ext):
+            extension = ext
+            name = name[: -len(ext)]
+            break
+
+    datatype = path.parent.name
+    if datatype not in list_datatypes():
+        datatype = ""
+
+    parts = name.split("_")
+    if len(parts) < 2:
+        return ParsedBasename(
+            datatype=datatype, suffix="", extension=extension,
+            entities={}, warnings=["Basename has no suffix component"],
+        )
+
+    suffix = parts[-1]
+    entities, issues = _parse_entity_tokens(parts[:-1])
+    return ParsedBasename(
+        datatype=datatype, suffix=suffix, extension=extension,
+        entities=entities, warnings=[msg for _rule_id, msg in issues],
+    )
+
+
 # -- internals ------------------------------------------------------------
 
 
@@ -369,4 +467,6 @@ __all__ = [
     "field_metadata",
     "build_basename",
     "build_relative_path",
+    "parse_basename",
+    "KNOWN_EXTENSIONS",
 ]

@@ -14,6 +14,7 @@ Lift-and-shift from ``inspector_proto/proto.py``; no logic change.
 """
 
 from .bids_tree_pane import BidsTreePane
+from .entity_editor_pane import EntityEditorPane
 from .image_label import ImageLabel
 from .json_tree_view import JsonTreeView
 from .nifti_viewer_pane import NiftiViewerPane
@@ -38,6 +39,7 @@ __all__ = [
     "BidsTreePane",
     "BusySpinner",
     "Chip",
+    "EntityEditorPane",
     "ImageLabel",
     "JsonTreeView",
     "KIND_BG_TOKEN",

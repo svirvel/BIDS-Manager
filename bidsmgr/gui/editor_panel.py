@@ -40,6 +40,7 @@ from .widgets import (
     BidsTreePane,
     BusySpinner,
     Chip,
+    EntityEditorPane,
     NiftiViewerPane,
     PanelFrame,
     PathBar,
@@ -120,6 +121,10 @@ class EditorPanel(QWidget):
         self._center_stack.currentChanged.connect(self._sync_undo_redo)
         self._validation_pane = ValidationPane()
         self._validation_pane.fix_requested.connect(self._on_fix_requested)
+        self._entity_editor = EntityEditorPane()
+        self._entity_editor.set_dirty_check(self._sidecar_has_unsaved_edits)
+        self._entity_editor.renamed.connect(self._on_entity_renamed)
+        self._entity_editor.history_changed.connect(self._sync_undo_redo)
         # The BIDS tree folds to the left, the validation pane to the right,
         # and the center viewer grows into the freed space. The viewer is
         # not collapsible (it's the main surface) but IS detachable so the
@@ -129,21 +134,28 @@ class EditorPanel(QWidget):
             self._center_stack, "Viewer", collapsible=False, detachable=True,
             hide_inner_header=False,
         )
+        self._entity_frame = PanelFrame(
+            self._entity_editor, "Entities", edge="right",
+        )
         self._validation_frame = PanelFrame(
             self._validation_pane, "Validation", edge="right",
         )
         self._panel_frames = [
-            self._tree_frame, self._center_frame, self._validation_frame,
+            self._tree_frame, self._center_frame, self._entity_frame,
+            self._validation_frame,
         ]
         self._splitter.addWidget(self._tree_frame)
         self._splitter.addWidget(self._center_frame)
+        self._splitter.addWidget(self._entity_frame)
         self._splitter.addWidget(self._validation_frame)
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
         self._splitter.setStretchFactor(2, 0)
-        self._splitter.setSizes([320, 700, 380])
-        # Collapsing the tree / validation hands width to the center viewer.
+        self._splitter.setStretchFactor(3, 0)
+        self._splitter.setSizes([320, 600, 280, 300])
+        # Collapsing the tree / entities / validation hands width to the center viewer.
         self._tree_frame.attach_splitter(self._splitter, grow_target=self._center_frame)
+        self._entity_frame.attach_splitter(self._splitter, grow_target=self._center_frame)
         self._validation_frame.attach_splitter(self._splitter, grow_target=self._center_frame)
         v.addWidget(self._splitter, 1)
 
@@ -641,6 +653,7 @@ class EditorPanel(QWidget):
             self._tsv_viewer.set_file(None, None)
             self._nifti_viewer.set_file(None, None)
             self._recording_viewer.set_file(None, None)
+            self._entity_editor.set_file(None, None)
             self._center_stack.setCurrentWidget(self._sidecar_form)
             self._validation_pane.set_current_file(path, self.current_root())
             return
@@ -669,6 +682,7 @@ class EditorPanel(QWidget):
             self._recording_viewer.set_file(None, None)
             self._center_stack.setCurrentWidget(self._sidecar_form)
         self._validation_pane.set_current_file(path, root)
+        self._entity_editor.set_file(path, root)
 
     def _show_recording(self, path: Path) -> None:
         """Route an EEG/MEG/iEEG recording to the recording viewer."""
@@ -755,6 +769,32 @@ class EditorPanel(QWidget):
             self._sidecar_form.focus_field(field)
 
     # ------------------------------------------------------------------
+    # Edit entities panel
+    # ------------------------------------------------------------------
+
+    def _sidecar_has_unsaved_edits(self, path: Path) -> bool:
+        """Best-effort dirty check the entities panel asks before renaming.
+
+        True when ``path`` is the JSON sidecar currently open in the
+        sidecar form AND it has undoable (i.e. uncommitted-to-disk) edits.
+        """
+        return (
+            self._sidecar_form.current_file() == path
+            and self._sidecar_form.can_undo()
+        )
+
+    def _on_entity_renamed(self, new_path: Path) -> None:
+        """The entities panel just renamed a file (Apply / Undo / Redo).
+
+        Refresh the tree immediately (don't wait for the filesystem
+        watcher's debounce), land on the file's new location, and
+        re-validate it so the Validation pane reflects the change.
+        """
+        self._tree_pane.refresh()
+        self.select_file_in_tree(new_path)
+        self.start_file_validation()
+
+    # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
     # Undo / redo (delegates to the active editable center pane)
@@ -762,6 +802,8 @@ class EditorPanel(QWidget):
 
     def _active_history_pane(self):
         """The current center pane if it supports undo/redo, else None."""
+        if self._entity_editor.can_undo() or self._entity_editor.can_redo():
+            return self._entity_editor
         w = self._center_stack.currentWidget()
         if w in (self._sidecar_form, self._tsv_viewer):
             return w

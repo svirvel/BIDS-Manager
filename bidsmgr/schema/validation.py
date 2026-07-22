@@ -111,21 +111,10 @@ def validate_entity_set(
     return verdicts
 
 
-_BASENAME_TOKEN = re.compile(r"^([a-zA-Z]+)-([0-9a-zA-Z]+)$")
-
-
 def validate_basename(
     basename: str,
     datatype: Datatype,
-    # Longest / double extensions FIRST so e.g. ``.tsv.gz`` is stripped before
-    # ``.tsv`` (otherwise the suffix parses as ``physio.tsv.gz`` and is
-    # wrongly flagged "not valid"). Covers MRI, physio, and EEG/MEG/iEEG.
-    extensions: tuple[str, ...] = (
-        ".nii.gz", ".tsv.gz", ".fif.gz",
-        ".nii", ".tsv", ".json", ".bval", ".bvec",
-        ".edf", ".bdf", ".gdf", ".vhdr", ".vmrk", ".eeg", ".fdt",
-        ".set", ".fif", ".con", ".sqd", ".cnt", ".kdf", ".mef", ".nwb", ".egi",
-    ),
+    extensions: tuple[str, ...] = engine.KNOWN_EXTENSIONS,
 ) -> list[ValidationVerdict]:
     """Parse + validate a BIDS basename. Strips extension; needs a known suffix."""
 
@@ -145,37 +134,15 @@ def validate_basename(
             )
         ]
     suffix = parts[-1]
-    entities_raw = parts[:-1]
+    schema_entities, issues = engine._parse_entity_tokens(parts[:-1])
 
-    schema_entities: dict[str, str] = {}
-    verdicts: list[ValidationVerdict] = []
-    short_to_long = _short_to_long_map()
-    for chunk in entities_raw:
-        m = _BASENAME_TOKEN.match(chunk)
-        if not m:
-            verdicts.append(
-                ValidationVerdict(
-                    severity=Severity.ERROR,
-                    scope=Scope.BASENAME,
-                    rule_id="basename.malformed_token",
-                    message=f"Token {chunk!r} is not a valid 'key-value' BIDS entity",
-                )
-            )
-            continue
-        short, value = m.group(1), m.group(2)
-        long_name = short_to_long.get(short)
-        if not long_name:
-            verdicts.append(
-                ValidationVerdict(
-                    severity=Severity.ERROR,
-                    scope=Scope.BASENAME,
-                    rule_id="entity.unknown",
-                    message=f"Unknown entity short form: {short!r}",
-                )
-            )
-            continue
-        schema_entities[long_name] = value
-
+    verdicts: list[ValidationVerdict] = [
+        ValidationVerdict(
+            severity=Severity.ERROR, scope=Scope.BASENAME,
+            rule_id=rule_id, message=message,
+        )
+        for rule_id, message in issues
+    ]
     verdicts.extend(validate_entity_set(schema_entities, datatype, suffix))
     return verdicts
 
@@ -194,20 +161,6 @@ def validate_dataset(dataset_root: Path) -> list[ValidationVerdict]:
             ),
         )
     ]
-
-
-def _short_to_long_map() -> dict[str, str]:
-    schema = engine.get_schema() if hasattr(engine, "get_schema") else None
-    # engine doesn't re-export get_schema; pull from loader directly.
-    from .loader import get_schema as _gs  # local to keep top imports clean
-
-    schema = _gs()
-    out: dict[str, str] = {}
-    for long_name in schema.objects.entities.keys():
-        info = schema.objects.entities[long_name]
-        short = str(info.get("name", long_name))
-        out[short] = long_name
-    return out
 
 
 __all__ = ["validate_entity_set", "validate_basename", "validate_dataset"]

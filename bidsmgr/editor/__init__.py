@@ -14,6 +14,14 @@ Reference: ``../inspector_proto/proto.py`` (visual prototype) and
 """
 
 from .html_report import render_html
+from .rename import (
+    RenamePlan,
+    apply_rename,
+    find_companions,
+    is_multifile_suffix,
+    plan_rename,
+    reverse_plan,
+)
 from .types import (
     FieldLevel,
     FileVerdict,
@@ -30,4 +38,6 @@ __all__ = [
     "SidecarField", "ValidationReport",
     "render_html", "rollup_severity",
     "validate", "validate_file", "validate_folder",
+    "RenamePlan", "apply_rename", "find_companions",
+    "is_multifile_suffix", "plan_rename", "reverse_plan",
 ]
